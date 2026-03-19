@@ -5,7 +5,7 @@ module Emulator
   )
 where
 
-import Data.Bits (Bits (shiftL))
+import Data.Bits (Bits (shiftL, shiftR, (.&.)))
 import Data.IntMap qualified as M
 import Data.Word
 
@@ -14,14 +14,14 @@ type AWord = Word64
 data Port = Left | Right deriving (Show, Enum, Eq)
 
 data Token = Token
-  { fp :: Int,
-    ip :: Int,
+  { ctx :: Int,
+    stmnt :: Int,
     port :: Port,
     val :: AWord
   }
   deriving (Show, Eq)
 
-data PresenceBits = Empty | Present deriving (Show, Enum)
+data PresenceBits = Empty | Present | Constant deriving (Show, Enum)
 
 type Memory = M.IntMap (PresenceBits, AWord)
 
@@ -41,10 +41,11 @@ data ALUOp = AddVal
 
 data TokenFormingRule = Arith | Switch | Extract | Send
 
-data Dest = Dest Int Port
+data Dest = Dest {offset :: Int, p :: Port}
 
 data Instruction = Instruction
   { ea :: EffectiveAddressMode,
+    er :: Int,
     tm :: TokenMatchingRule,
     ao :: ALUOp,
     tf :: TokenFormingRule,
@@ -55,12 +56,12 @@ data Instruction = Instruction
 -- TODO make instructions generic over ISAs
 data ISA = ISA
   { parseInstr :: Memory -> Int -> Instruction,
-    applyInstr :: Instruction -> Memory -> (Memory, [Token]),
+    applyInstr :: Token -> Instruction -> Memory -> (Memory, [Token]),
     selector :: [Token] -> ([Token], [Token]) -- (to_exec, rest)
   }
 
 applyToken :: ISA -> Token -> Memory -> (Memory, [Token])
-applyToken isa t mem = applyInstr isa (parseInstr isa mem (ip t)) mem
+applyToken isa t mem = applyInstr isa t (parseInstr isa mem (stmnt t)) mem
 
 clock :: ISA -> ArchState -> ArchState
 clock isa (ArchState mem pending) =
@@ -75,3 +76,133 @@ clock isa (ArchState mem pending) =
           (map (applyToken isa) toProcess) ::
           (Memory, [Token])
    in ArchState mem' unprocessed
+
+squall :: ISA
+squall =
+  ISA
+    { parseInstr = squallParse,
+      applyInstr = squallApply,
+      selector = (,[])
+    }
+
+squallParseEA :: AWord -> EffectiveAddressMode
+squallParseEA 0b00 = FrameRelative
+squallParseEA 0b01 = CodeRelative
+squallParseEA 0b10 = Global
+
+squallParseTM :: AWord -> TokenMatchingRule
+squallParseTM 0b00 = Dyadic
+squallParseTM 0b01 = Monadic
+squallParseTM 0b10 = ConstDyadic
+
+squallParseAO :: AWord -> ALUOp
+squallParseAO 0b00000 = AddVal
+
+squallParseTF :: AWord -> TokenFormingRule
+squallParseTF 0b00 = Arith
+squallParseTF 0b01 = Switch
+squallParseTF 0b10 = Send
+squallParseTF 0b11 = Extract
+
+squallParse :: Memory -> Int -> Instruction
+squallParse mem addr =
+  let (_, val) = mem M.! addr
+      er = (val `shiftR` 12) .&. 0x3FF
+      ea = (val `shiftR` 10) .&. 0b11
+      tm = (val `shiftR` 8) .&. 0b11
+      ao = (val `shiftR` 2) .&. 0x1F
+      tf = val .&. 0b11
+
+      d1 =
+        Dest
+          ((fromIntegral val `shiftR` 23) .&. 0xFFFFF)
+          ( if ((val `shiftR` 22) .&. 0b1) == 1
+              then Emulator.Right
+              else Emulator.Left
+          )
+      d2 =
+        Dest
+          ((fromIntegral val `shiftR` 44) .&. 0xFFFFF)
+          ( if ((val `shiftR` 43) .&. 0b1) == 1
+              then Emulator.Right
+              else Emulator.Left
+          )
+   in Instruction
+        { ea = squallParseEA ea,
+          er = fromIntegral er,
+          tm = squallParseTM tm,
+          ao = squallParseAO ao,
+          tf = squallParseTF tf,
+          d1 = d1,
+          d2 = d2
+        }
+
+data MemOp = Read | Write | Exchange | DecrExchange
+
+matchingFunction :: TokenMatchingRule -> Port -> PresenceBits -> (PresenceBits, MemOp, Bool)
+matchingFunction Dyadic port Empty = (Present, Write, False)
+matchingFunction Dyadic port Present = (Empty, Read, True)
+matchingFunction Monadic Emulator.Left pres = (pres, Read, True)
+matchingFunction ConstDyadic Emulator.Left Empty =
+  (Present, Write, False)
+matchingFunction ConstDyadic Emulator.Right Empty =
+  (Constant, Write, False)
+matchingFunction ConstDyadic Emulator.Right Present =
+  (Constant, Exchange, True)
+matchingFunction ConstDyadic Emulator.Left Constant =
+  (Constant, Read, True)
+
+squallALUOp :: ALUOp -> AWord -> AWord -> AWord
+squallALUOp AddVal = (+)
+
+squallApply :: Token -> Instruction -> Memory -> (Memory, [Token])
+squallApply t instr mem =
+  let addr = case ea instr of
+        FrameRelative ->
+          ctx t
+            + er
+              ( squallParse mem $
+                  fromIntegral $
+                    snd (mem M.! stmnt t)
+              )
+        CodeRelative -> ctx t + er instr
+        Global -> er instr
+      (pb, memVal) = mem M.! fromIntegral addr
+      (pb', mop, issue) = matchingFunction (tm instr) (port t) pb
+      memVal' = case mop of
+        Read -> memVal
+        Write -> Emulator.val t
+        Exchange ->
+          Emulator.val t
+        DecrExchange -> error "todo"
+      mem' = M.insert addr (pb', memVal') mem
+
+      (vl, vr) = case tm instr of
+        Dyadic ->
+          if port t == Emulator.Left
+            then (val t, memVal)
+            else (memVal, val t)
+        Monadic -> (val t, val t)
+        ConstDyadic -> error "todo" -- handle sorting const/val
+      generatedTokens = case tf instr of
+        Arith ->
+          let v' = squallALUOp (ao instr) vl vr
+              s' = stmnt t + offset (d1 instr)
+              s'' = stmnt t + offset (d2 instr)
+           in [ Token
+                  { ctx = ctx t,
+                    stmnt = s',
+                    port = p $ d1 instr,
+                    val = v'
+                  },
+                Token
+                  { ctx = ctx t,
+                    stmnt = s'',
+                    port = p $ d2 instr,
+                    val = v'
+                  }
+              ]
+        Switch -> error "todo"
+        Send -> error "todo"
+        Extract -> error "todo"
+   in (mem', generatedTokens)

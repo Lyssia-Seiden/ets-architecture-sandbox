@@ -69,3 +69,19 @@ depending on the opcode, this can be an offset to the ip, fp, or an abs addr
 s is an offset for rhs destination
 lhs destination is always IP + 1
 
+# squall
+
+what if ETS was easy
+for me
+
+64 bit word, 8 bit presence
+instruction:
+[d1 [addr ; 20] :: [port ; 1]] (43)
+:: [d2 [addr ; 20] :: [port ; 1]] (22)
+:: [r ; 10] :: [ea ; 2]
+:: [tm ; 2] :: [ao ; 6] :: [tf ; 2]
+
+yeah we just assume destinations are in a 25 bit addr region
+bc im lazy
+
+0 = left
