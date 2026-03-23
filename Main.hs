@@ -1,7 +1,9 @@
+{-# LANGUAGE NumericUnderscores #-}
 import Data.IntMap qualified as M
 import Emulator
 
 main = do
+  let instrs = [(0, 00000000000000000010_0_00000000000000000000_0_0000000000_00_00_00000_00)] :: [(Int, Emulator.AWord)]
   let state =
         ArchState
           { mem = M.insert 0 (Present, 0) M.empty,

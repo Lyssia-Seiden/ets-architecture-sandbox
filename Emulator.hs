@@ -5,12 +5,14 @@ module Emulator
     squall,
     PresenceBits (..),
     clock,
+    AWord,
   )
 where
 
 import Data.Bits (Bits (shiftL, shiftR, (.&.)))
 import Data.IntMap qualified as M
-import Data.Maybe (fromMaybe)
+import Data.List (find)
+import Data.Maybe (fromJust, fromMaybe)
 import Data.Word
 import Debug.Trace (trace)
 
@@ -41,13 +43,13 @@ data ArchState = ArchState
   }
   deriving (Show)
 
-data EffectiveAddressMode = FrameRelative | CodeRelative | Global
+data EffectiveAddressMode = FrameRelative | CodeRelative | Global deriving (Show, Eq, Enum)
 
-data TokenMatchingRule = Dyadic | Monadic | ConstDyadic
+data TokenMatchingRule = Dyadic | Monadic | ConstDyadic deriving (Show, Eq, Enum)
 
-data ALUOp = AddVal
+data ALUOp = AddVal deriving (Show, Eq, Enum)
 
-data TokenFormingRule = Arith | Switch | Extract | Send
+data TokenFormingRule = Arith | Switch | Extract | Send deriving (Show, Eq, Enum)
 
 data Dest = Dest {offset :: Int, p :: Port}
 
@@ -96,24 +98,56 @@ squall =
       selector = (,[])
     }
 
+squallEARepr :: [(AWord, EffectiveAddressMode)]
+squallEARepr =
+  [ (0b00, FrameRelative),
+    (0b01, CodeRelative),
+    (0b10, Global)
+  ]
+
 squallParseEA :: AWord -> EffectiveAddressMode
-squallParseEA 0b00 = FrameRelative
-squallParseEA 0b01 = CodeRelative
-squallParseEA 0b10 = Global
+squallParseEA a = snd . fromJust $ find ((== a) . fst) squallEARepr
+
+squallAsmEA :: EffectiveAddressMode -> AWord
+squallAsmEA ea = fst . fromJust $ find ((== ea) . snd) squallEARepr
+
+squallTMRepr :: [(AWord, TokenMatchingRule)]
+squallTMRepr =
+  [ (0b00, Dyadic),
+    (0b01, Monadic),
+    (0b10, ConstDyadic)
+  ]
 
 squallParseTM :: AWord -> TokenMatchingRule
-squallParseTM 0b00 = Dyadic
-squallParseTM 0b01 = Monadic
-squallParseTM 0b10 = ConstDyadic
+squallParseTM a = snd . fromJust $ find ((== a) . fst) squallTMRepr
+
+squallAsmTM :: TokenMatchingRule -> AWord
+squallAsmTM a = fst . fromJust $ find ((== a) . snd) squallTMRepr
+
+squallAORepr :: [(AWord, ALUOp)]
+squallAORepr =
+  [ (0b00000, AddVal)
+  ]
 
 squallParseAO :: AWord -> ALUOp
-squallParseAO 0b00000 = AddVal
+squallParseAO a = snd . fromJust $ find ((== a) . fst) squallAORepr
+
+squallAsmAO :: ALUOp -> AWord
+squallAsmAO a = fst . fromJust $ find ((== a) . snd) squallAORepr
+
+squallTFRepr :: [(AWord, TokenFormingRule)]
+squallTFRepr =
+  [ (0b00, Arith),
+    (0b01, Switch),
+    (0b10, Send),
+    (0b11, Extract)
+  ]
 
 squallParseTF :: AWord -> TokenFormingRule
-squallParseTF 0b00 = Arith
-squallParseTF 0b01 = Switch
-squallParseTF 0b10 = Send
-squallParseTF 0b11 = Extract
+squallParseTF a = snd . fromJust $ find ((== a) . fst) squallTFRepr
+
+squallAsmTF :: TokenFormingRule -> AWord
+squallAsmTF a = fst . fromJust $ find ((== a) . snd) squallTFRepr
 
 squallParse :: Memory -> Int -> Instruction
 squallParse mem addr =

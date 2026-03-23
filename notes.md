@@ -85,3 +85,10 @@ yeah we just assume destinations are in a 25 bit addr region
 bc im lazy
 
 0 = left
+
+add two instructions and send them to the same
+frame relative addr
+00000000000000000010 0
+00000000000000000000 0 # nop
+0000000000 00
+00 00000 00
