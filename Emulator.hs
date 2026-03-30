@@ -6,10 +6,18 @@ module Emulator
     PresenceBits (..),
     clock,
     AWord,
+    squallAsm,
+    Instruction (..),
+    EffectiveAddressMode(..),
+    TokenMatchingRule(..),
+    ALUOp(..),
+    TokenFormingRule(..),
+    Dest(..),
+    trace',
   )
 where
 
-import Data.Bits (Bits (shiftL, shiftR, (.&.)))
+import Data.Bits (Bits (shiftL, shiftR, (.&.)), (.|.))
 import Data.IntMap qualified as M
 import Data.List (find)
 import Data.Maybe (fromJust, fromMaybe)
@@ -19,6 +27,10 @@ import Debug.Trace (trace)
 type AWord = Word64
 
 data Port = Left | Right deriving (Show, Enum, Eq)
+
+portToInt :: Port -> AWord
+portToInt Emulator.Left = 0
+portToInt Emulator.Right = 1
 
 data Token = Token
   { ctx :: Int,
@@ -51,7 +63,7 @@ data ALUOp = AddVal deriving (Show, Eq, Enum)
 
 data TokenFormingRule = Arith | Switch | Extract | Send deriving (Show, Eq, Enum)
 
-data Dest = Dest {offset :: Int, p :: Port}
+data Dest = Dest {offset :: Int, p :: Port} deriving (Show, Eq)
 
 data Instruction = Instruction
   { ea :: EffectiveAddressMode,
@@ -61,7 +73,7 @@ data Instruction = Instruction
     tf :: TokenFormingRule,
     d1 :: Dest,
     d2 :: Dest
-  }
+  } deriving (Show, Eq)
 
 -- TODO make instructions generic over ISAs
 data ISA = ISA
@@ -84,7 +96,7 @@ clock isa (ArchState mem pending) =
       (toProcess, unprocessed) = selector isa pending
       (mem', newTokens) =
         foldl
-          (\(m, ts) f -> trace' (fst $ f m, ts ++ snd (f m)))
+          (\(m, ts) f -> (fst $ f m, ts ++ snd (f m)))
           (mem, [])
           (map (applyToken isa) toProcess) ::
           (Memory, [Token])
@@ -95,8 +107,12 @@ squall =
   ISA
     { parseInstr = squallParse,
       applyInstr = squallApply,
-      selector = (,[])
+      selector = squallSelector
     }
+
+squallSelector :: [Token] -> ([Token], [Token])
+squallSelector (t:ts) = ([t],ts)
+squallSelector [] = ([], [])
 
 squallEARepr :: [(AWord, EffectiveAddressMode)]
 squallEARepr =
@@ -209,7 +225,7 @@ squallApply t instr mem =
         FrameRelative ->
           ctx t
             + er
-              ( squallParse mem $
+              ( squallParse mem $ -- isnt this just instr?
                   fromIntegral $
                     snd (mem `memRead` stmnt t)
               )
@@ -260,3 +276,16 @@ squallApply t instr mem =
         Send -> error "todo"
         Extract -> error "todo"
    in (mem', generatedTokens)
+
+squallAsm :: Instruction -> AWord
+squallAsm instr =
+  let place w o v = (v .&. ((2 ^ (w+1)) - 1)) `shiftL` o
+   in place 2 0 (squallAsmTF $ tf instr)
+        .|. place 6 2 (squallAsmAO $ ao instr)
+        .|. place 2 8 (squallAsmTM $ tm instr)
+        .|. place 2 10 (squallAsmEA $ ea instr)
+        .|. place 10 12 (fromIntegral $ er instr)
+        .|. place 1 22 (portToInt $ p $ d1 instr)
+        .|. place 20 23 (fromIntegral $ offset $ d1 instr)
+        .|. place 1 43 (portToInt $ p $ d2 instr)
+        .|. place 20 44 (fromIntegral $ offset $ d2 instr)
