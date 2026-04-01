@@ -203,6 +203,8 @@ data MemOp = Read | Write | Exchange | DecrExchange
 matchingFunction :: TokenMatchingRule -> Port -> PresenceBits -> (PresenceBits, MemOp, Bool)
 matchingFunction Dyadic port Empty = (Present, Write, False)
 matchingFunction Dyadic port Present = (Empty, Read, True)
+-- TODO is this correct
+matchingFunction Dyadic port Constant = (Constant, Read, True)
 matchingFunction Monadic Emulator.Left pres = (pres, Read, True)
 matchingFunction ConstDyadic Emulator.Left Empty =
   (Present, Write, False)
@@ -229,7 +231,7 @@ squallApply t instr mem =
                   fromIntegral $
                     snd (mem `memRead` stmnt t)
               )
-        CodeRelative -> ctx t + er instr
+        CodeRelative -> stmnt t + er instr
         Global -> er instr
       (pb, memVal) = mem `memRead` fromIntegral addr
       (pb', mop, issue) = matchingFunction (tm instr) (port t) pb

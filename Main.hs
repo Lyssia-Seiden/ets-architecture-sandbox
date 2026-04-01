@@ -27,16 +27,30 @@ main =
                     tm = Monadic,
                     ao = AddVal,
                     tf = Arith,
-                    d1 = Dest 2 Emulator.Left,
+                    d1 = Dest 1 Emulator.Left,
                     d2 = Dest 0 Emulator.Left
                   }
-          )
+          ),
+          ( 2,
+            squallAsm $
+              Emulator.trace'
+                Emulator.Instruction
+                  { ea = CodeRelative,
+                    er = 2,
+                    tm = Dyadic,
+                    ao = AddVal,
+                    tf = Arith,
+                    d1 = Dest 1 Emulator.Left,
+                    d2 = Dest 0 Emulator.Left
+                  }
+          ),
+          (4, 1000)
         ]
    in do
         print instrs
         let state =
               ArchState
-                { mem = M.fromList $ map (\(a, v) -> (a, (Present, v))) instrs,
+                { mem = M.fromList $ map (\(a, v) -> (a, (Constant, v))) instrs,
                   pending =
                     [ Token {ctx = 255, stmnt = 0, port = Emulator.Left, val = 42},
                       Token {ctx = 255, stmnt = 0, port = Emulator.Right, val = 58},
@@ -49,6 +63,8 @@ main =
         print $ clockN 2 state
         print $ clockN 3 state
         print $ clockN 4 state
+        print $ clockN 5 state
+        print $ clockN 6 state
 
 clockN :: Int -> ArchState -> ArchState
 clockN 0 a = a
