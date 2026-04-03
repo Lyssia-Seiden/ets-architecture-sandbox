@@ -44,6 +44,19 @@ main =
                     d2 = Dest 0 Emulator.Left
                   }
           ),
+          ( 3,
+            squallAsm $
+              Emulator.trace'
+                Emulator.Instruction
+                  { ea = CodeRelative,
+                    er = 2,
+                    tm = Monadic,
+                    ao = Nop,
+                    tf = Arith,
+                    d1 = Dest 2 Emulator.Left,
+                    d2 = Dest 0 Emulator.Left
+                  }
+          ),
           (4, 1000)
         ]
    in do
@@ -65,6 +78,8 @@ main =
         print $ clockN 4 state
         print $ clockN 5 state
         print $ clockN 6 state
+        print $ clockN 7 state
+        print $ clockN 8 state
 
 clockN :: Int -> ArchState -> ArchState
 clockN 0 a = a

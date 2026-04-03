@@ -8,11 +8,11 @@ module Emulator
     AWord,
     squallAsm,
     Instruction (..),
-    EffectiveAddressMode(..),
-    TokenMatchingRule(..),
-    ALUOp(..),
-    TokenFormingRule(..),
-    Dest(..),
+    EffectiveAddressMode (..),
+    TokenMatchingRule (..),
+    ALUOp (..),
+    TokenFormingRule (..),
+    Dest (..),
     trace',
   )
 where
@@ -59,7 +59,7 @@ data EffectiveAddressMode = FrameRelative | CodeRelative | Global deriving (Show
 
 data TokenMatchingRule = Dyadic | Monadic | ConstDyadic deriving (Show, Eq, Enum)
 
-data ALUOp = AddVal deriving (Show, Eq, Enum)
+data ALUOp = Nop | AddVal deriving (Show, Eq, Enum)
 
 data TokenFormingRule = Arith | Switch | Extract | Send deriving (Show, Eq, Enum)
 
@@ -73,7 +73,8 @@ data Instruction = Instruction
     tf :: TokenFormingRule,
     d1 :: Dest,
     d2 :: Dest
-  } deriving (Show, Eq)
+  }
+  deriving (Show, Eq)
 
 -- TODO make instructions generic over ISAs
 data ISA = ISA
@@ -111,7 +112,7 @@ squall =
     }
 
 squallSelector :: [Token] -> ([Token], [Token])
-squallSelector (t:ts) = ([t],ts)
+squallSelector (t : ts) = ([t], ts)
 squallSelector [] = ([], [])
 
 squallEARepr :: [(AWord, EffectiveAddressMode)]
@@ -142,7 +143,8 @@ squallAsmTM a = fst . fromJust $ find ((== a) . snd) squallTMRepr
 
 squallAORepr :: [(AWord, ALUOp)]
 squallAORepr =
-  [ (0b00000, AddVal)
+  [ (0b00000, Nop),
+    (0b00001, AddVal)
   ]
 
 squallParseAO :: AWord -> ALUOp
@@ -216,10 +218,25 @@ matchingFunction ConstDyadic Emulator.Left Constant =
   (Constant, Read, True)
 
 squallALUOp :: ALUOp -> AWord -> AWord -> AWord
-squallALUOp AddVal = (+)
+squallALUOp Nop lhs _ = lhs
+squallALUOp AddVal lhs rhs = lhs + rhs
 
 squallALUOutputLR :: ALUOp -> (Bool, Bool)
+squallALUOutputLR Nop = (True, False)
 squallALUOutputLR AddVal = (True, False)
+
+squallParseTag :: AWord -> (AWord, AWord, Port)
+squallParseTag w =
+  ( w `shiftR` 32,
+    (w `shiftR` 1) .&. (2 ^ 32 - 1),
+    if even w then Emulator.Right else Emulator.Left
+  )
+
+squallPackTag :: AWord -> AWord -> Port -> AWord
+squallPackTag ctx stmnt port =
+  (ctx `shiftL` 32)
+    .|. ((stmnt `shiftL` 1) .&. (2 ^ 32 - 1))
+    .|. if port == Emulator.Left then 0 else 1
 
 squallApply :: Token -> Instruction -> Memory -> (Memory, [Token])
 squallApply t instr mem =
@@ -227,7 +244,8 @@ squallApply t instr mem =
         FrameRelative ->
           ctx t
             + er
-              ( squallParse mem $ -- isnt this just instr?
+              ( squallParse mem $ -- isnt this just instr? -- isnt this just instr?
+              -- isnt this just instr?
                   fromIntegral $
                     snd (mem `memRead` stmnt t)
               )
@@ -275,13 +293,42 @@ squallApply t instr mem =
                      ]
                    )
         Switch -> error "todo"
-        Send -> error "todo"
-        Extract -> error "todo"
+        Send ->
+          let (ctx', stmnt', port') = squallParseTag vl
+
+              s' = stmnt t + offset (d1 instr)
+           in [ Token
+                  { ctx = fromIntegral ctx',
+                    stmnt = fromIntegral stmnt',
+                    port = port',
+                    val = vr
+                  },
+                Token
+                  { ctx = ctx t,
+                    stmnt = s',
+                    port = p $ d1 instr,
+                    val = vr
+                  }
+              ]
+        Extract ->
+          let s' = stmnt t + offset (d1 instr)
+              s'' = stmnt t + offset (d2 instr)
+           in [ Token
+                  { ctx = ctx t,
+                    stmnt = s',
+                    port = p $ d1 instr,
+                    val =
+                      squallPackTag
+                        (fromIntegral $ ctx t)
+                        (fromIntegral s'')
+                        (p $ d2 instr)
+                  }
+              ]
    in (mem', generatedTokens)
 
 squallAsm :: Instruction -> AWord
 squallAsm instr =
-  let place w o v = (v .&. ((2 ^ (w+1)) - 1)) `shiftL` o
+  let place w o v = (v .&. ((2 ^ (w + 1)) - 1)) `shiftL` o
    in place 2 0 (squallAsmTF $ tf instr)
         .|. place 6 2 (squallAsmAO $ ao instr)
         .|. place 2 8 (squallAsmTM $ tm instr)
