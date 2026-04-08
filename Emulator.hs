@@ -244,7 +244,7 @@ squallApply t instr mem =
         FrameRelative ->
           ctx t
             + er
-              ( squallParse mem $ -- isnt this just instr? -- isnt this just instr?
+              ( squallParse mem $
               -- isnt this just instr?
                   fromIntegral $
                     snd (mem `memRead` stmnt t)
