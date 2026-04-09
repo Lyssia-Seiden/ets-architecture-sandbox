@@ -59,7 +59,7 @@ data EffectiveAddressMode = FrameRelative | CodeRelative | Global deriving (Show
 
 data TokenMatchingRule = Dyadic | Monadic | ConstDyadic deriving (Show, Eq, Enum)
 
-data ALUOp = Nop | AddVal deriving (Show, Eq, Enum)
+data ALUOp = Nop | AddVal | Lt | Dup deriving (Show, Eq, Enum)
 
 data TokenFormingRule = Arith | Switch | Extract | Send deriving (Show, Eq, Enum)
 
@@ -144,7 +144,9 @@ squallAsmTM a = fst . fromJust $ find ((== a) . snd) squallTMRepr
 squallAORepr :: [(AWord, ALUOp)]
 squallAORepr =
   [ (0b00000, Nop),
-    (0b00001, AddVal)
+    (0b00001, AddVal),
+    (0b00010, Lt),
+    (0b00011, Dup)
   ]
 
 squallParseAO :: AWord -> ALUOp
@@ -220,10 +222,14 @@ matchingFunction ConstDyadic Emulator.Left Constant =
 squallALUOp :: ALUOp -> AWord -> AWord -> AWord
 squallALUOp Nop lhs _ = lhs
 squallALUOp AddVal lhs rhs = lhs + rhs
+squallALUOp Lt lhs rhs = if lhs < rhs then 1 else 0
+squallALUOp Dup lhs _ = lhs
 
 squallALUOutputLR :: ALUOp -> (Bool, Bool)
 squallALUOutputLR Nop = (True, False)
 squallALUOutputLR AddVal = (True, False)
+squallALUOutputLR Lt = (True, False)
+squallALUOutputLR Dup = (True, True)
 
 squallParseTag :: AWord -> (AWord, AWord, Port)
 squallParseTag w =
@@ -245,7 +251,7 @@ squallApply t instr mem =
           ctx t
             + er
               ( squallParse mem $
-              -- isnt this just instr?
+                  -- isnt this just instr?
                   fromIntegral $
                     snd (mem `memRead` stmnt t)
               )
@@ -292,7 +298,28 @@ squallApply t instr mem =
                        | ir && issue
                      ]
                    )
-        Switch -> error "todo"
+        Switch ->
+          let s' = stmnt t + offset (d1 instr)
+              s'' = stmnt t + offset (d2 instr)
+              (il, ir) = (vr /= 0, vr == 0)
+           in ( [ Token
+                    { ctx = ctx t,
+                      stmnt = s',
+                      port = p $ d1 instr,
+                      val = vl
+                    }
+                  | il && issue
+                ]
+              )
+                ++ ( [ Token
+                         { ctx = ctx t,
+                           stmnt = s'',
+                           port = p $ d2 instr,
+                           val = vl
+                         }
+                       | ir && issue
+                     ]
+                   )
         Send ->
           let (ctx', stmnt', port') = squallParseTag vl
 
