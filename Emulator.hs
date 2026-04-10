@@ -274,13 +274,20 @@ squallApply t instr mem =
         DecrExchange -> error "todo"
       mem' = M.insert addr (pb', memVal') mem
 
+      -- For both Dyadic and ConstDyadic the L-vs-R sorting is the same: the
+      -- value that just arrived sits on the port the firing token came in on,
+      -- and the previously-stored value is on the other side. ConstDyadic's
+      -- two firing cases (Right→Exchange and Left→Read) both fall out of this:
+      -- in the Read case the stored value is the latched constant on the R
+      -- side, in the Exchange case it's the L value that wrote first.
+      portSorted =
+        if port t == Emulator.Left
+          then (val t, memVal)
+          else (memVal, val t)
       (vl, vr) = case tm instr of
-        Dyadic ->
-          if port t == Emulator.Left
-            then (val t, memVal)
-            else (memVal, val t)
+        Dyadic -> portSorted
+        ConstDyadic -> portSorted
         Monadic -> (val t, val t)
-        ConstDyadic -> error "todo" -- handle sorting const/val
       generatedTokens = case tf instr of
         Arith ->
           let v' = squallALUOp (ao instr) vl vr
