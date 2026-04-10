@@ -86,6 +86,37 @@ bc im lazy
 
 0 = left
 
+## field encodings
+
+ea (effective addressing mode, 2 bits) — how `r` resolves to a memory address:
+- 00 FrameRelative — `ctx t + r(instr@stmnt)`, i.e. r is read from the *frame slot* pointed at by the firing token's stmnt, then added to ctx
+- 01 CodeRelative  — `stmnt t + r`
+- 10 Global        — `r` (absolute)
+
+tm (token matching rule, 2 bits) — state machine on the presence bits at the resolved address:
+- 00 Dyadic      — empty -(write)-> present -(read, fire)-> empty. waits for both operands.
+- 01 Monadic     — always fires, single operand. left port only.
+- 10 ConstDyadic — empty -(L write)-> present -(R exchange, fire)-> constant
+                       \-(R write)-> constant -(L read, fire)-> constant
+                   used to latch a constant operand and then fire repeatedly against it.
+
+ao (ALU op, 6 bits in the layout, 5 used) — operation and which dest ports get an output token:
+- 00000 Nop    — passthrough lhs; issues d1 only
+- 00001 AddVal — lhs + rhs;       issues d1 only
+- 00010 Lt     — lhs < rhs ? 1 : 0; issues d1 only
+- 00011 Dup    — passthrough lhs; issues BOTH d1 and d2 (the only op that fans out via the ALU stage)
+- 00100 MulVal — lhs * rhs;       issues d1 only
+
+which destinations actually fire is `squallALUOutputLR ao` — adding a new ao means updating both the value function and the (il, ir) function.
+
+tf (token forming rule, 2 bits) — what tokens come out of a firing:
+- 00 Arith   — emit value(s) from the ALU op to d1 (and d2 if the op fans out). dest stmnt = `stmnt t + offset`.
+- 01 Switch  — predicate on rhs: if rhs /= 0 emit lhs to d1, else emit lhs to d2. ALU op is ignored on the value path.
+- 10 Send    — interpret lhs as a packed tag (ctx, stmnt, port); emit a token with that tag carrying rhs as value, AND emit rhs to d1 in the *current* ctx as an ack.
+- 11 Extract — pack `(ctx t, stmnt t + offset(d2), port(d2))` into a tag value and emit it to d1. inverse of Send; used to mint return-address tags.
+
+tag layout (used by Send/Extract): `[ctx ; 32] :: [stmnt ; 31] :: [port ; 1]` packed into one 64-bit word, low bit = port. NOTE: `squallParseTag` and `squallPackTag` currently disagree on the port bit polarity (parse: even→Right, pack: Left→0), and they don't mask `ctx` to 32 bits — both are bugs to fix before Send/Extract round-trips reliably.
+
 add two instructions and send them to the same
 frame relative addr
 00000000000000000010 0
