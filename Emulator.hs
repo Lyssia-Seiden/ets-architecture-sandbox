@@ -59,7 +59,7 @@ data EffectiveAddressMode = FrameRelative | CodeRelative | Global deriving (Show
 
 data TokenMatchingRule = Dyadic | Monadic | ConstDyadic deriving (Show, Eq, Enum)
 
-data ALUOp = Nop | AddVal | Lt | Dup deriving (Show, Eq, Enum)
+data ALUOp = Nop | AddVal | Lt | Dup | MulVal deriving (Show, Eq, Enum)
 
 data TokenFormingRule = Arith | Switch | Extract | Send deriving (Show, Eq, Enum)
 
@@ -146,7 +146,8 @@ squallAORepr =
   [ (0b00000, Nop),
     (0b00001, AddVal),
     (0b00010, Lt),
-    (0b00011, Dup)
+    (0b00011, Dup),
+    (0b00100, MulVal)
   ]
 
 squallParseAO :: AWord -> ALUOp
@@ -224,12 +225,14 @@ squallALUOp Nop lhs _ = lhs
 squallALUOp AddVal lhs rhs = lhs + rhs
 squallALUOp Lt lhs rhs = if lhs < rhs then 1 else 0
 squallALUOp Dup lhs _ = lhs
+squallALUOp MulVal lhs rhs = lhs * rhs
 
 squallALUOutputLR :: ALUOp -> (Bool, Bool)
 squallALUOutputLR Nop = (True, False)
 squallALUOutputLR AddVal = (True, False)
 squallALUOutputLR Lt = (True, False)
 squallALUOutputLR Dup = (True, True)
+squallALUOutputLR MulVal = (True, False)
 
 squallParseTag :: AWord -> (AWord, AWord, Port)
 squallParseTag w =
