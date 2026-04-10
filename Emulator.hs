@@ -237,14 +237,14 @@ squallALUOutputLR MulVal = (True, False)
 squallParseTag :: AWord -> (AWord, AWord, Port)
 squallParseTag w =
   ( w `shiftR` 32,
-    (w `shiftR` 1) .&. (2 ^ 32 - 1),
-    if even w then Emulator.Right else Emulator.Left
+    (w `shiftR` 1) .&. (2 ^ 31 - 1),
+    if even w then Emulator.Left else Emulator.Right
   )
 
 squallPackTag :: AWord -> AWord -> Port -> AWord
 squallPackTag ctx stmnt port =
-  (ctx `shiftL` 32)
-    .|. ((stmnt `shiftL` 1) .&. (2 ^ 32 - 1))
+  ((ctx .&. (2 ^ 32 - 1)) `shiftL` 32)
+    .|. ((stmnt .&. (2 ^ 31 - 1)) `shiftL` 1)
     .|. if port == Emulator.Left then 0 else 1
 
 squallApply :: Token -> Instruction -> Memory -> (Memory, [Token])

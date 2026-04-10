@@ -115,7 +115,7 @@ tf (token forming rule, 2 bits) — what tokens come out of a firing:
 - 10 Send    — interpret lhs as a packed tag (ctx, stmnt, port); emit a token with that tag carrying rhs as value, AND emit rhs to d1 in the *current* ctx as an ack.
 - 11 Extract — pack `(ctx t, stmnt t + offset(d2), port(d2))` into a tag value and emit it to d1. inverse of Send; used to mint return-address tags.
 
-tag layout (used by Send/Extract): `[ctx ; 32] :: [stmnt ; 31] :: [port ; 1]` packed into one 64-bit word, low bit = port. NOTE: `squallParseTag` and `squallPackTag` currently disagree on the port bit polarity (parse: even→Right, pack: Left→0), and they don't mask `ctx` to 32 bits — both are bugs to fix before Send/Extract round-trips reliably.
+tag layout (used by Send/Extract): `[ctx ; 32] :: [stmnt ; 31] :: [port ; 1]` packed into one 64-bit word, low bit = port (0 = left, matching the rest of squall). oversized fields are masked off in pack and parse.
 
 add two instructions and send them to the same
 frame relative addr
