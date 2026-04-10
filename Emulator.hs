@@ -221,6 +221,7 @@ matchingFunction ConstDyadic Emulator.Right Present =
   (Constant, Exchange, True)
 matchingFunction ConstDyadic Emulator.Left Constant =
   (Constant, Read, True)
+matchingFunction tm port pres = error $ "matchingFunction: " ++ show tm ++ " " ++ show port ++ " " ++ show pres
 
 squallALUOp :: ALUOp -> AWord -> AWord -> AWord
 squallALUOp Nop lhs _ = lhs
