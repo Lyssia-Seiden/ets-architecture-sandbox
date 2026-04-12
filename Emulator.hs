@@ -255,14 +255,7 @@ squallPackTag ctx stmnt port =
 squallApply :: Token -> Instruction -> Memory -> (Memory, [Token])
 squallApply t instr mem =
   let addr = case ea instr of
-        FrameRelative ->
-          ctx t
-            + er
-              ( squallParse mem $
-                  -- isnt this just instr?
-                  fromIntegral $
-                    snd (mem `memRead` stmnt t)
-              )
+        FrameRelative -> ctx t + er instr
         CodeRelative -> stmnt t + er instr
         Global -> er instr
       (pb, memVal) = mem `memRead` fromIntegral addr

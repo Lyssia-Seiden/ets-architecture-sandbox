@@ -3,87 +3,55 @@
 import Data.IntMap qualified as M
 import Emulator
 
-main =
-  let instrs =
-        [ ( 0,
-            squallAsm $
-              Emulator.trace'
-                Emulator.Instruction
-                  { ea = FrameRelative,
-                    er = 1,
-                    tm = Dyadic,
-                    ao = AddVal,
-                    tf = Arith,
-                    d1 = Dest 1 Emulator.Left,
-                    d2 = Dest 0 Emulator.Left
-                  }
-          ),
-          ( 1,
-            squallAsm $
-              Emulator.trace'
-                Emulator.Instruction
-                  { ea = FrameRelative,
-                    er = 0,
-                    tm = Monadic,
-                    ao = AddVal,
-                    tf = Arith,
-                    d1 = Dest 1 Emulator.Left,
-                    d2 = Dest 0 Emulator.Left
-                  }
-          ),
-          ( 2,
-            squallAsm $
-              Emulator.trace'
-                Emulator.Instruction
-                  { ea = CodeRelative,
-                    er = 2,
-                    tm = Dyadic,
-                    ao = AddVal,
-                    tf = Arith,
-                    d1 = Dest 1 Emulator.Left,
-                    d2 = Dest 0 Emulator.Left
-                  }
-          ),
-          ( 3,
-            squallAsm $
-              Emulator.trace'
-                Emulator.Instruction
-                  { ea = CodeRelative,
-                    er = 2,
-                    tm = Monadic,
-                    ao = Nop,
-                    tf = Arith,
-                    d1 = Dest 2 Emulator.Left,
-                    d2 = Dest 0 Emulator.Left
-                  }
-          ),
-          (4, 1000)
-        ]
-   in do
-        print instrs
-        let state =
-              ArchState
-                { mem = M.fromList $ map (\(a, v) -> (a, (Constant, v))) instrs,
-                  pending =
-                    [ Token {ctx = 255, stmnt = 0, port = Emulator.Left, val = 42},
-                      Token {ctx = 255, stmnt = 0, port = Emulator.Right, val = 58},
-                      Token {ctx = 255, stmnt = 1, port = Emulator.Left, val = 28}
-                    ]
-                }
+-- squallFib calling-convention slots (must match the let bindings inside
+-- squallFib). Pulled out so the test harness can construct entry tokens.
+entryN, entryRa :: Int
+entryN  = 0
+entryRa = 1
 
-        print $ clockN 0 state
-        print $ clockN 1 state
-        print $ clockN 2 state
-        print $ clockN 3 state
-        print $ clockN 4 state
-        print $ clockN 5 state
-        print $ clockN 6 state
-        print $ clockN 7 state
-        print $ clockN 8 state
+main :: IO ()
+main = do
+  let expected = [0, 1, 1, 2, 3, 5, 8]
+  mapM_ (\(n, e) -> do
+    let r = fibTest n
+    putStrLn $ "fib " ++ show n ++ " = " ++ show r
+              ++ if r == e then "" else "  *** EXPECTED " ++ show e
+    ) (zip [0..6] expected)
 
-clockN :: Int -> ArchState -> ArchState
-clockN 0 a = a
-clockN n a = clockN (n - 1) $ clock squall a
+-- Run the machine until pending is empty or the cycle cap is hit.
+runUntilQuiescent :: Int -> ArchState -> ArchState
+runUntilQuiescent 0 s = s
+runUntilQuiescent n s
+  | null (pending s) = s
+  | otherwise        = runUntilQuiescent (n - 1) (clock squall s)
+
+initialFibState :: Int -> ArchState
+initialFibState n =
+  let prog       = zip [0..] squallFib
+      raCtx      = 10000
+      raStmnt    = 50  -- outside program range; empty mem parses as Dyadic,
+                       -- so the single result token writes and doesn't fire
+      raTag      = squallPackTag (fromIntegral raCtx) (fromIntegral raStmnt) Emulator.Left
+      initialCtx = 100
+      memInit    = M.fromList [(a, (Constant, v)) | (a, v) <- prog]
+   in ArchState
+        { mem = memInit
+        , pending =
+            [ Token { ctx = initialCtx, stmnt = entryN,  port = Emulator.Left, val = fromIntegral n }
+            , Token { ctx = initialCtx, stmnt = entryRa, port = Emulator.Left, val = raTag }
+            ]
+        }
+
+-- Build initial state for fib(n), clock to quiescence, read result out of the
+-- spec-compliant return slot.
+fibTest :: Int -> AWord
+fibTest n =
+  let final = runUntilQuiescent 1000000 (initialFibState n)
+      -- The result token lands at addr = raCtx + er(parse(mem[raStmnt])).
+      -- mem[raStmnt] is empty -> parses as zero -> er=0 -> addr = raCtx.
+   in case mem final M.!? 10000 of
+        Just (_, v) -> v
+        Nothing     -> error "fibTest: result slot never written"
 
 -- Naive Fibonacci: fib(N) = if N<2 then N else fib(N-1) + fib(N-2)
 --
@@ -131,22 +99,39 @@ squallFib =
       send_ra2       = 32
       ret_join       = 33
       final_send     = 34
-      drain          = 35
+      drain_n1       = 35
+      drain_ra1      = 36
+      drain_n2       = 37
+      drain_ra2      = 38
+      drain_final    = 39
 
-      -- frame operand slots (er field) for each Dyadic instruction; must be
-      -- unique within a frame. Picked clear of the instruction-address range.
-      fr_switch  = 200
-      fr_final   = 201
-      fr_join    = 202
-      fr_send_n1 = 203
-      fr_send_r1 = 204
-      fr_send_n2 = 205
-      fr_send_r2 = 206
+      -- Frame operand slots (er field) for each Dyadic instruction. Packed
+      -- tightly into er=64..75 (12 slots) so the per-frame footprint stays
+      -- under the inter-sibling ctx stride (16). Monadic ops use er=76 — its
+      -- exact value is irrelevant (Monadic just reads), but it must sit
+      -- *outside* the Dyadic er window so Monadic reads can never alias a
+      -- live Dyadic slot in some other ctx.
+      fr_switch  = 64
+      fr_final   = 65
+      fr_join    = 66
+      fr_send_n1 = 67
+      fr_send_r1 = 68
+      fr_send_n2 = 69
+      fr_send_r2 = 70
+      fr_drn_n1  = 71
+      fr_drn_r1  = 72
+      fr_drn_n2  = 73
+      fr_drn_r2  = 74
+      fr_drn_fn  = 75
 
       -- packed-tag arithmetic constants
       entry_ra_offset = fromIntegral entry_ra * 2 :: AWord -- ENTRY_RA<<1, port L=0
-      pow_2_32 = (2 :: AWord) ^ (32 :: Int)
-      pow_2_33 = (2 :: AWord) ^ (33 :: Int)
+      -- Children get ctx = 32*self_ctx and 32*self_ctx + 16 (so siblings are
+      -- 16 apart, exceeding the 12-slot frame footprint above). In high-32-bit
+      -- shifted form: child1_high = self_ctx * 2^37; child2_high = child1_high
+      -- + 16*2^32 = child1_high + 2^36.
+      sib_mul_const = (2 :: AWord) ^ (37 :: Int)            -- self_ctx → child1<<32
+      sib_add_const = (2 :: AWord) ^ (36 :: Int)            -- child1<<32 → child2<<32
       neg_one  = maxBound :: AWord                          -- 2^64 - 1
       neg_two  = maxBound - 1 :: AWord                      -- 2^64 - 2
 
@@ -155,7 +140,7 @@ squallFib =
       noDest = Dest 0 Emulator.Left
 
       mon ao' d1' d2' = Instruction
-        { ea = FrameRelative, er = 0
+        { ea = FrameRelative, er = 76
         , tm = Monadic, ao = ao', tf = Arith
         , d1 = d1', d2 = d2' }
 
@@ -177,9 +162,9 @@ squallFib =
           (off entry_n cmp Emulator.Left)
           (off entry_n switch_addr Emulator.Left)
 
-      , -- 1  ENTRY_RA: forward RA to final_send.R
+      , -- 1  ENTRY_RA: forward RA to final_send.L (Send uses vl as the tag)
         squallAsm $ mon Nop
-          (off entry_ra final_send Emulator.Right)
+          (off entry_ra final_send Emulator.Left)
           noDest
 
       , -- 2  cmp: ConstDyadic Lt N 2 -> switch.R (predicate)
@@ -190,10 +175,10 @@ squallFib =
         2
 
       , -- 4  switch: Dyadic Switch. vl=N, vr=(N<2).
-        --     True (N<2):  N -> final_send.L (base case: fib(0)=0, fib(1)=1)
+        --     True (N<2):  N -> final_send.R (base case: fib(0)=0, fib(1)=1)
         --     False:       N -> rec_entry.L (recursive case)
         squallAsm $ dyadic fr_switch Switch Nop
-          (off switch_addr final_send Emulator.Left)
+          (off switch_addr final_send Emulator.Right)
           (off switch_addr rec_entry Emulator.Left)
 
       , -- 5  rec_entry: dup N to decr1.L and fan_a (start of trigger chain)
@@ -233,7 +218,7 @@ squallFib =
       , -- 13 ctx_extract: Monadic Extract. Mints a tag with our self_ctx in
         --     the high 32 bits, irrelevant slot in low bits. -> ctx_shr.L
         squallAsm $ Instruction
-          { ea = FrameRelative, er = 0
+          { ea = FrameRelative, er = 76
           , tm = Monadic, ao = Nop, tf = Extract
           , d1 = off ctx_extract ctx_shr Emulator.Left
           , d2 = noDest -- encoded slot is irrelevant; we Shr the result
@@ -247,14 +232,15 @@ squallFib =
       , -- 15 ctx_shr_const: 32
         32
 
-      , -- 16 mul_2_33: ConstDyadic MulVal 2^33 -> tag1_dup1.L
-        --     Computes tag1_high = (2*self_ctx) << 32, i.e. the high bits
-        --     of pack(2*self_ctx, _, _). 2*self_ctx is the new ctx for child 1.
+      , -- 16 mul_2_33: ConstDyadic MulVal 2^37 -> tag1_dup1.L
+        --     Computes tag1_high = (32*self_ctx) << 32, i.e. the high bits
+        --     of pack(32*self_ctx, _, _). 32*self_ctx is the new ctx for child 1.
+        --     (Strided by 32 so siblings are >= frame footprint apart in ctx.)
         squallAsm $ cdyadic MulVal
           (off mul_2_33 tag1_dup1 Emulator.Left)
 
-      , -- 17 mul_2_33_const: 2^33
-        pow_2_33
+      , -- 17 mul_2_33_const: 2^37 (= 32 << 32)
+        sib_mul_const
 
       , -- 18 tag1_dup1: dup tag1_high to add_2_32 (to compute tag2_high)
         --     and tag1_dup2 (further fan-out for child 1)
@@ -268,13 +254,14 @@ squallFib =
           (off tag1_dup2 send_n1 Emulator.Left)
           (off tag1_dup2 add_off_ra_1 Emulator.Left)
 
-      , -- 20 add_2_32: tag1_high + 2^32 = tag2_high (since new_ctx2 = new_ctx1+1
-        --     and shifting that left 32 adds 2^32 to the shifted form). -> tag2_dup
+      , -- 20 add_2_32: tag1_high + 2^36 = tag2_high (since new_ctx2 = new_ctx1+16
+        --     and shifting that left 32 adds 16*2^32 = 2^36 to the shifted form).
+        --     -> tag2_dup
         squallAsm $ cdyadic AddVal
           (off add_2_32 tag2_dup Emulator.Left)
 
-      , -- 21 add_2_32_const: 2^32
-        pow_2_32
+      , -- 21 add_2_32_const: 2^36 (= 16 << 32)
+        sib_add_const
 
       , -- 22 tag2_dup: dup tag2_high to send_n2.L and add_off_ra_2.L
         squallAsm $ mon Dup
@@ -299,7 +286,7 @@ squallFib =
         --     The minted tag (= the return-address we hand to child 1) lands at
         --     send_ra1.R as the value to be Sent.
         squallAsm $ Instruction
-          { ea = FrameRelative, er = 0
+          { ea = FrameRelative, er = 76
           , tm = Monadic, ao = Nop, tf = Extract
           , d1 = off mint_ret1 send_ra1 Emulator.Right
           , d2 = off mint_ret1 ret_join Emulator.Left
@@ -308,7 +295,7 @@ squallFib =
       , -- 28 mint_ret2: same but encodes (self_ctx, ret_join, R) so child 2's
         --     result lands on the OTHER port of ret_join.
         squallAsm $ Instruction
-          { ea = FrameRelative, er = 0
+          { ea = FrameRelative, er = 76
           , tm = Monadic, ao = Nop, tf = Extract
           , d1 = off mint_ret2 send_ra2 Emulator.Right
           , d2 = off mint_ret2 ret_join Emulator.Right
@@ -317,38 +304,43 @@ squallFib =
       , -- 29 send_n1: Dyadic Send. L=tag1_for_N, R=N-1. Sends N-1 to child 1's
         --     ENTRY_N. Ack drains.
         squallAsm $ dyadic fr_send_n1 Send Nop
-          (off send_n1 drain Emulator.Left)
+          (off send_n1 drain_n1 Emulator.Left)
           noDest
 
       , -- 30 send_ra1: L=tag1_for_RA, R=ret-tag-1. Sends RA to child 1's ENTRY_RA.
         squallAsm $ dyadic fr_send_r1 Send Nop
-          (off send_ra1 drain Emulator.Left)
+          (off send_ra1 drain_ra1 Emulator.Left)
           noDest
 
       , -- 31 send_n2: child 2 N-arg
         squallAsm $ dyadic fr_send_n2 Send Nop
-          (off send_n2 drain Emulator.Left)
+          (off send_n2 drain_n2 Emulator.Left)
           noDest
 
       , -- 32 send_ra2: child 2 RA
         squallAsm $ dyadic fr_send_r2 Send Nop
-          (off send_ra2 drain Emulator.Left)
+          (off send_ra2 drain_ra2 Emulator.Left)
           noDest
 
       , -- 33 ret_join: Dyadic AddVal. L=ret1 (from child 1's Send), R=ret2.
-        --     -> final_send.L (the recursive case's result)
+        --     -> final_send.R (the recursive case's result)
         squallAsm $ dyadic fr_join Arith AddVal
-          (off ret_join final_send Emulator.Left)
+          (off ret_join final_send Emulator.Right)
           noDest
 
-      , -- 34 final_send: Dyadic Send. L=result (base or recursive), R=RA.
+      , -- 34 final_send: Dyadic Send. L=RA (the destination tag), R=result.
         --     Sends result at RA tag. This is the single spec-compliant
         --     return-address handler that both code paths route through.
         squallAsm $ dyadic fr_final Send Nop
-          (off final_send drain Emulator.Left)
+          (off final_send drain_final Emulator.Left)
           noDest
 
-      , -- 35 drain: Send-ack sink. Self-loop but never produces useful tokens
-        --     (the drain itself is Monadic and just consumes acks).
-        squallAsm $ mon Nop noDest noDest
+      , -- 35 drain_n1..39 drain_final: Send-ack sinks. Each is a Dyadic Nop on
+        --     a unique frame operand slot — the first (and only) ack from the
+        --     corresponding Send writes Empty→Present, no fire, ack consumed.
+        squallAsm $ dyadic fr_drn_n1 Arith Nop noDest noDest
+      , squallAsm $ dyadic fr_drn_r1 Arith Nop noDest noDest
+      , squallAsm $ dyadic fr_drn_n2 Arith Nop noDest noDest
+      , squallAsm $ dyadic fr_drn_r2 Arith Nop noDest noDest
+      , squallAsm $ dyadic fr_drn_fn Arith Nop noDest noDest
       ]
