@@ -339,7 +339,7 @@ squallApply t instr mem =
           let (ctx', stmnt', port') = squallParseTag vl
 
               s' = stmnt t + offset (d1 instr)
-           in [ Token
+           in if issue then [ Token
                   { ctx = fromIntegral ctx',
                     stmnt = fromIntegral stmnt',
                     port = port',
@@ -351,21 +351,20 @@ squallApply t instr mem =
                     port = p $ d1 instr,
                     val = vr
                   }
-              ]
+              ] else []
         Extract ->
           let s' = stmnt t + offset (d1 instr)
               s'' = stmnt t + offset (d2 instr)
-           in [ Token
-                  { ctx = ctx t,
-                    stmnt = s',
-                    port = p $ d1 instr,
-                    val =
-                      squallPackTag
-                        (fromIntegral $ ctx t)
-                        (fromIntegral s'')
-                        (p $ d2 instr)
-                  }
-              ]
+           in ([Token
+                        { ctx = ctx t,
+                          stmnt = s',
+                          port = p $ d1 instr,
+                          val =
+                            squallPackTag
+                              (fromIntegral $ ctx t)
+                              (fromIntegral s'')
+                              (p $ d2 instr)
+                        } | issue])
    in (mem', generatedTokens)
 
 squallAsm :: Instruction -> AWord
