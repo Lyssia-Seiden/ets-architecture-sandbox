@@ -11,12 +11,14 @@ entryRa = 1
 
 main :: IO ()
 main = do
-  let expected = [0, 1, 1, 2, 3, 5, 8]
+  -- ctx field is 32 bits; with stride=16 the tree depth limit is ~8,
+  -- so fib(9) is the largest reliably computable value.
+  let expected = [0, 1, 1, 2, 3, 5, 8, 13, 21, 34]
   mapM_ (\(n, e) -> do
     let r = fibTest n
     putStrLn $ "fib " ++ show n ++ " = " ++ show r
               ++ if r == e then "" else "  *** EXPECTED " ++ show e
-    ) (zip [0..6] expected)
+    ) (zip [0..] expected)
 
 -- Run the machine until pending is empty or the cycle cap is hit.
 runUntilQuiescent :: Int -> ArchState -> ArchState
@@ -32,7 +34,7 @@ initialFibState n =
       raStmnt    = 50  -- outside program range; empty mem parses as Dyadic,
                        -- so the single result token writes and doesn't fire
       raTag      = squallPackTag (fromIntegral raCtx) (fromIntegral raStmnt) Emulator.Left
-      initialCtx = 100
+      initialCtx = 1
       memInit    = M.fromList [(a, (Constant, v)) | (a, v) <- prog]
    in ArchState
         { mem = memInit
@@ -106,11 +108,10 @@ squallFib =
       drain_final    = 39
 
       -- Frame operand slots (er field) for each Dyadic instruction. Packed
-      -- tightly into er=64..75 (12 slots) so the per-frame footprint stays
-      -- under the inter-sibling ctx stride (16). Monadic ops use er=76 — its
-      -- exact value is irrelevant (Monadic just reads), but it must sit
-      -- *outside* the Dyadic er window so Monadic reads can never alias a
-      -- live Dyadic slot in some other ctx.
+      -- tightly into er=64..75 (12 slots) matching the inter-sibling ctx
+      -- stride (12). Monadic ops use er=76 — its exact value is irrelevant
+      -- (Monadic never writes to memory), but kept outside the Dyadic range
+      -- for clarity.
       fr_switch  = 64
       fr_final   = 65
       fr_join    = 66
@@ -126,12 +127,12 @@ squallFib =
 
       -- packed-tag arithmetic constants
       entry_ra_offset = fromIntegral entry_ra * 2 :: AWord -- ENTRY_RA<<1, port L=0
-      -- Children get ctx = 32*self_ctx and 32*self_ctx + 16 (so siblings are
-      -- 16 apart, exceeding the 12-slot frame footprint above). In high-32-bit
-      -- shifted form: child1_high = self_ctx * 2^37; child2_high = child1_high
-      -- + 16*2^32 = child1_high + 2^36.
-      sib_mul_const = (2 :: AWord) ^ (37 :: Int)            -- self_ctx → child1<<32
-      sib_add_const = (2 :: AWord) ^ (36 :: Int)            -- child1<<32 → child2<<32
+      -- Children get ctx = 16*self_ctx and 16*self_ctx + 12 (so siblings are
+      -- 12 apart, matching the 12-slot frame footprint above). In high-32-bit
+      -- shifted form: child1_high = self_ctx * 2^36; child2_high = child1_high
+      -- + 12*2^32.
+      sib_mul_const = (2 :: AWord) ^ (36 :: Int)            -- self_ctx → child1<<32
+      sib_add_const = 12 * (2 :: AWord) ^ (32 :: Int)       -- child1<<32 → child2<<32
       neg_one  = maxBound :: AWord                          -- 2^64 - 1
       neg_two  = maxBound - 1 :: AWord                      -- 2^64 - 2
 
@@ -232,14 +233,13 @@ squallFib =
       , -- 15 ctx_shr_const: 32
         32
 
-      , -- 16 mul_2_33: ConstDyadic MulVal 2^37 -> tag1_dup1.L
-        --     Computes tag1_high = (32*self_ctx) << 32, i.e. the high bits
-        --     of pack(32*self_ctx, _, _). 32*self_ctx is the new ctx for child 1.
-        --     (Strided by 32 so siblings are >= frame footprint apart in ctx.)
+      , -- 16 mul_2_33: ConstDyadic MulVal 2^36 -> tag1_dup1.L
+        --     Computes tag1_high = (16*self_ctx) << 32, i.e. the high bits
+        --     of pack(16*self_ctx, _, _). 16*self_ctx is the new ctx for child 1.
         squallAsm $ cdyadic MulVal
           (off mul_2_33 tag1_dup1 Emulator.Left)
 
-      , -- 17 mul_2_33_const: 2^37 (= 32 << 32)
+      , -- 17 mul_2_33_const: 2^36 (= 16 << 32)
         sib_mul_const
 
       , -- 18 tag1_dup1: dup tag1_high to add_2_32 (to compute tag2_high)
@@ -254,13 +254,13 @@ squallFib =
           (off tag1_dup2 send_n1 Emulator.Left)
           (off tag1_dup2 add_off_ra_1 Emulator.Left)
 
-      , -- 20 add_2_32: tag1_high + 2^36 = tag2_high (since new_ctx2 = new_ctx1+16
-        --     and shifting that left 32 adds 16*2^32 = 2^36 to the shifted form).
+      , -- 20 add_2_32: tag1_high + 12*2^32 = tag2_high (since new_ctx2 = new_ctx1+12
+        --     and shifting that left 32 adds 12*2^32 to the shifted form).
         --     -> tag2_dup
         squallAsm $ cdyadic AddVal
           (off add_2_32 tag2_dup Emulator.Left)
 
-      , -- 21 add_2_32_const: 2^36 (= 16 << 32)
+      , -- 21 add_2_32_const: 12 * 2^32
         sib_add_const
 
       , -- 22 tag2_dup: dup tag2_high to send_n2.L and add_off_ra_2.L
