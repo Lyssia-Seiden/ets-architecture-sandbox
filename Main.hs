@@ -11,9 +11,9 @@ entryRa = 1
 
 main :: IO ()
 main = do
-  -- ctx field is 32 bits; with stride=16 the tree depth limit is ~8,
-  -- so fib(9) is the largest reliably computable value.
-  let expected = [0, 1, 1, 2, 3, 5, 8, 13, 21, 34]
+  -- Heap-indexed ctx allocation; depth limit ~29 (32-bit ctx field).
+  -- Test fib(0..15); higher values are correct but slow (naive O(fib(n)) recursion).
+  let expected = [0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 377 + 610]
   mapM_ (\(n, e) -> do
     let r = fibTest n
     putStrLn $ "fib " ++ show n ++ " = " ++ show r
@@ -34,7 +34,7 @@ initialFibState n =
       raStmnt    = 50  -- outside program range; empty mem parses as Dyadic,
                        -- so the single result token writes and doesn't fire
       raTag      = squallPackTag (fromIntegral raCtx) (fromIntegral raStmnt) Emulator.Left
-      initialCtx = 1
+      initialCtx = 8   -- heap index 1 × spacing 8
       memInit    = M.fromList [(a, (Constant, v)) | (a, v) <- prog]
    in ArchState
         { mem = memInit
@@ -101,17 +101,10 @@ squallFib =
       send_ra2       = 32
       ret_join       = 33
       final_send     = 34
-      drain_n1       = 35
-      drain_ra1      = 36
-      drain_n2       = 37
-      drain_ra2      = 38
-      drain_final    = 39
-
-      -- Frame operand slots (er field) for each Dyadic instruction. Packed
-      -- tightly into er=64..75 (12 slots) matching the inter-sibling ctx
-      -- stride (12). Monadic ops use er=76 — its exact value is irrelevant
-      -- (Monadic never writes to memory), but kept outside the Dyadic range
-      -- for clarity.
+      -- Frame operand slots (er field) for each Dyadic instruction. 7 slots
+      -- (er=64..70), matching the inter-sibling ctx spacing (8). Sends are
+      -- self-draining (ack routes back to self; frame slot is Empty after
+      -- firing, so the single ack writes harmlessly). Monadic ops use er=76.
       fr_switch  = 64
       fr_final   = 65
       fr_join    = 66
@@ -119,20 +112,13 @@ squallFib =
       fr_send_r1 = 68
       fr_send_n2 = 69
       fr_send_r2 = 70
-      fr_drn_n1  = 71
-      fr_drn_r1  = 72
-      fr_drn_n2  = 73
-      fr_drn_r2  = 74
-      fr_drn_fn  = 75
 
       -- packed-tag arithmetic constants
       entry_ra_offset = fromIntegral entry_ra * 2 :: AWord -- ENTRY_RA<<1, port L=0
-      -- Children get ctx = 16*self_ctx and 16*self_ctx + 12 (so siblings are
-      -- 12 apart, matching the 12-slot frame footprint above). In high-32-bit
-      -- shifted form: child1_high = self_ctx * 2^36; child2_high = child1_high
-      -- + 12*2^32.
-      sib_mul_const = (2 :: AWord) ^ (36 :: Int)            -- self_ctx → child1<<32
-      sib_add_const = 12 * (2 :: AWord) ^ (32 :: Int)       -- child1<<32 → child2<<32
+      -- Heap-indexed allocation: child1 = 2*self_ctx, child2 = 2*self_ctx+8.
+      -- Spacing=8 >= frame footprint (7). Max depth ~29, supports fib(29).
+      sib_mul_const = (2 :: AWord) ^ (33 :: Int)            -- self_ctx → child1<<32
+      sib_add_const = (2 :: AWord) ^ (35 :: Int)            -- child1<<32 → child2<<32
       neg_one  = maxBound :: AWord                          -- 2^64 - 1
       neg_two  = maxBound - 1 :: AWord                      -- 2^64 - 2
 
@@ -233,13 +219,13 @@ squallFib =
       , -- 15 ctx_shr_const: 32
         32
 
-      , -- 16 mul_2_33: ConstDyadic MulVal 2^36 -> tag1_dup1.L
-        --     Computes tag1_high = (16*self_ctx) << 32, i.e. the high bits
-        --     of pack(16*self_ctx, _, _). 16*self_ctx is the new ctx for child 1.
+      , -- 16 mul_2_33: ConstDyadic MulVal 2^33 -> tag1_dup1.L
+        --     Computes child1_high = (2*self_ctx) << 32. Heap-indexed:
+        --     child1_ctx = 2*parent_ctx.
         squallAsm $ cdyadic MulVal
           (off mul_2_33 tag1_dup1 Emulator.Left)
 
-      , -- 17 mul_2_33_const: 2^36 (= 16 << 32)
+      , -- 17 mul_2_33_const: 2^33 (= 2 << 32)
         sib_mul_const
 
       , -- 18 tag1_dup1: dup tag1_high to add_2_32 (to compute tag2_high)
@@ -254,13 +240,12 @@ squallFib =
           (off tag1_dup2 send_n1 Emulator.Left)
           (off tag1_dup2 add_off_ra_1 Emulator.Left)
 
-      , -- 20 add_2_32: tag1_high + 12*2^32 = tag2_high (since new_ctx2 = new_ctx1+12
-        --     and shifting that left 32 adds 12*2^32 to the shifted form).
+      , -- 20 add_2_32: tag1_high + 8*2^32 = tag2_high (child2 = child1 + spacing).
         --     -> tag2_dup
         squallAsm $ cdyadic AddVal
           (off add_2_32 tag2_dup Emulator.Left)
 
-      , -- 21 add_2_32_const: 12 * 2^32
+      , -- 21 add_2_32_const: 8 * 2^32 = 2^35
         sib_add_const
 
       , -- 22 tag2_dup: dup tag2_high to send_n2.L and add_off_ra_2.L
@@ -302,24 +287,25 @@ squallFib =
           }
 
       , -- 29 send_n1: Dyadic Send. L=tag1_for_N, R=N-1. Sends N-1 to child 1's
-        --     ENTRY_N. Ack drains.
+        --     ENTRY_N. Self-draining: ack routes back here (frame slot is Empty
+        --     after firing, ack writes harmlessly).
         squallAsm $ dyadic fr_send_n1 Send Nop
-          (off send_n1 drain_n1 Emulator.Left)
+          (Dest 0 Emulator.Left)
           noDest
 
       , -- 30 send_ra1: L=tag1_for_RA, R=ret-tag-1. Sends RA to child 1's ENTRY_RA.
         squallAsm $ dyadic fr_send_r1 Send Nop
-          (off send_ra1 drain_ra1 Emulator.Left)
+          (Dest 0 Emulator.Left)
           noDest
 
       , -- 31 send_n2: child 2 N-arg
         squallAsm $ dyadic fr_send_n2 Send Nop
-          (off send_n2 drain_n2 Emulator.Left)
+          (Dest 0 Emulator.Left)
           noDest
 
       , -- 32 send_ra2: child 2 RA
         squallAsm $ dyadic fr_send_r2 Send Nop
-          (off send_ra2 drain_ra2 Emulator.Left)
+          (Dest 0 Emulator.Left)
           noDest
 
       , -- 33 ret_join: Dyadic AddVal. L=ret1 (from child 1's Send), R=ret2.
@@ -329,18 +315,8 @@ squallFib =
           noDest
 
       , -- 34 final_send: Dyadic Send. L=RA (the destination tag), R=result.
-        --     Sends result at RA tag. This is the single spec-compliant
-        --     return-address handler that both code paths route through.
+        --     Self-draining.
         squallAsm $ dyadic fr_final Send Nop
-          (off final_send drain_final Emulator.Left)
+          (Dest 0 Emulator.Left)
           noDest
-
-      , -- 35 drain_n1..39 drain_final: Send-ack sinks. Each is a Dyadic Nop on
-        --     a unique frame operand slot — the first (and only) ack from the
-        --     corresponding Send writes Empty→Present, no fire, ack consumed.
-        squallAsm $ dyadic fr_drn_n1 Arith Nop noDest noDest
-      , squallAsm $ dyadic fr_drn_r1 Arith Nop noDest noDest
-      , squallAsm $ dyadic fr_drn_n2 Arith Nop noDest noDest
-      , squallAsm $ dyadic fr_drn_r2 Arith Nop noDest noDest
-      , squallAsm $ dyadic fr_drn_fn Arith Nop noDest noDest
       ]
