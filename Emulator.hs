@@ -15,6 +15,9 @@ module Emulator
     Dest (..),
     squallPackTag,
     trace',
+    Memory,
+    squallAsmPB,
+    squallParsePB,
   )
 where
 
@@ -41,7 +44,20 @@ data Token = Token
   }
   deriving (Show, Eq)
 
-data PresenceBits = Empty | Present | Constant deriving (Show, Enum)
+data PresenceBits = Empty | Present | Constant deriving (Show, Enum, Eq)
+
+squallPBRepr :: [(AWord, PresenceBits)]
+squallPBRepr =
+  [ (0b00, Empty),
+    (0b01, Present),
+    (0b10, Constant)
+  ]
+
+squallParsePB :: AWord -> PresenceBits
+squallParsePB a = snd . fromJust $ find ((== a) . fst) squallPBRepr
+
+squallAsmPB :: PresenceBits -> AWord
+squallAsmPB pb = fst . fromJust $ find ((== pb) . snd) squallPBRepr
 
 type Memory = M.IntMap (PresenceBits, AWord)
 
@@ -332,32 +348,38 @@ squallApply t instr mem =
           let (ctx', stmnt', port') = squallParseTag vl
 
               s' = stmnt t + offset (d1 instr)
-           in if issue then [ Token
-                  { ctx = fromIntegral ctx',
-                    stmnt = fromIntegral stmnt',
-                    port = port',
-                    val = vr
-                  },
-                Token
-                  { ctx = ctx t,
-                    stmnt = s',
-                    port = p $ d1 instr,
-                    val = vr
-                  }
-              ] else []
+           in if issue
+                then
+                  [ Token
+                      { ctx = fromIntegral ctx',
+                        stmnt = fromIntegral stmnt',
+                        port = port',
+                        val = vr
+                      },
+                    Token
+                      { ctx = ctx t,
+                        stmnt = s',
+                        port = p $ d1 instr,
+                        val = vr
+                      }
+                  ]
+                else []
         Extract ->
           let s' = stmnt t + offset (d1 instr)
               s'' = stmnt t + offset (d2 instr)
-           in ([Token
-                        { ctx = ctx t,
-                          stmnt = s',
-                          port = p $ d1 instr,
-                          val =
-                            squallPackTag
-                              (fromIntegral $ ctx t)
-                              (fromIntegral s'')
-                              (p $ d2 instr)
-                        } | issue])
+           in ( [ Token
+                    { ctx = ctx t,
+                      stmnt = s',
+                      port = p $ d1 instr,
+                      val =
+                        squallPackTag
+                          (fromIntegral $ ctx t)
+                          (fromIntegral s'')
+                          (p $ d2 instr)
+                    }
+                  | issue
+                ]
+              )
    in (mem', generatedTokens)
 
 squallAsm :: Instruction -> AWord
